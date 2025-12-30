@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Squad Shooter</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #1a1a2e;
+            overflow: hidden;
+            touch-action: none;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        #gameCanvas {
+            display: block;
+            margin: 0 auto;
+        }
+
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 20px;
+            color: #fff;
+            font-size: 18px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        .ui-item {
+            background: rgba(0,0,0,0.5);
+            padding: 8px 16px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .ui-icon {
+            width: 20px;
+            height: 20px;
+        }
+
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.9);
+            padding: 40px;
+            border-radius: 16px;
+            text-align: center;
+            color: #fff;
+            display: none;
+            z-index: 20;
+        }
+
+        #gameOver h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            color: #e94560;
+        }
+
+        #gameOver .final-score {
+            font-size: 32px;
+            margin-bottom: 30px;
+        }
+
+        #restartBtn {
+            background: #4a6fa5;
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        #restartBtn:hover {
+            background: #5a8fd5;
+        }
+
+        #startScreen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.9);
+            padding: 40px;
+            border-radius: 16px;
+            text-align: center;
+            color: #fff;
+            z-index: 20;
+        }
+
+        #startScreen h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            color: #4a6fa5;
+        }
+
+        #startScreen p {
+            font-size: 18px;
+            margin-bottom: 20px;
+            color: #aaa;
+        }
+
+        #startBtn {
+            background: #4a6fa5;
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        #startBtn:hover {
+            background: #5a8fd5;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui">
+        <div class="ui-item" id="scoreDisplay">
+            <span>SCORE:</span>
+            <span id="scoreValue">0</span>
+        </div>
+        <div class="ui-item" id="soldierDisplay">
+            <span>🎖️</span>
+            <span id="soldierValue">5</span>
+        </div>
+        <div class="ui-item" id="weaponDisplay">
+            <span>🔫</span>
+            <span id="weaponValue">RIFLE</span>
+        </div>
+    </div>
+
+    <div id="startScreen">
+        <h1>SQUAD SHOOTER</h1>
+        <p>Drag to move your squad<br>Destroy enemies, choose gates wisely</p>
+        <button id="startBtn">START GAME</button>
+    </div>
+
+    <div id="gameOver">
+        <h1>GAME OVER</h1>
+        <div class="final-score">Score: <span id="finalScore">0</span></div>
+        <button id="restartBtn">PLAY AGAIN</button>
+    </div>
+
+    <script>
+        // ============================================
+        // GAME CONFIGURATION
+        // ============================================
+        const CONFIG = {
+            // Player
+            INITIAL_SOLDIERS: 5,
+            MAX_SOLDIERS: 50,
+            SOLDIER_SIZE: 12,
+            SQUAD_SPREAD: 8,
+
+            // Weapons
+            WEAPONS: {
+                RIFLE: {
+                    name: 'RIFLE',
+                    spread: 15,      // degrees
+                    range: 400,
+                    fireRate: 200,   // ms between shots
+                    damage: 2,
+                    bulletSpeed: 12,
+                    color: '#4a6fa5'
+                },
+                SMG: {
+                    name: 'SMG',
+                    spread: 35,
+                    range: 250,
+                    fireRate: 80,
+                    damage: 1,
+                    bulletSpeed: 14,
+                    color: '#f4a261'
+                },
+                SHOTGUN: {
+                    name: 'SHOTGUN',
+                    spread: 5,
+                    range: 500,
+                    fireRate: 400,
+                    damage: 4,
+                    bulletSpeed: 10,
+                    color: '#e76f51'
+                }
+            },
+
+            // Scrolling
+            BASE_SCROLL_SPEED: 2,
+            MAX_SCROLL_SPEED: 6,
+
+            // Enemies
+            BARREL_HP_BASE: 5,
+            SOLDIER_HP_BASE: 3,
+            ENEMY_SOLDIER_SPEED: 1.5,
+
+            // Gates
+            GATE_WIDTH: 120,
+            GATE_HEIGHT: 60,
+            GATE_GAP: 30,
+
+            // Difficulty
+            DIFFICULTY_INCREASE_INTERVAL: 10000, // ms
+        };
+
+        // ============================================
+        // GAME STATE
+        // ============================================
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let gameState = {
+            running: false,
+            gameOver: false,
+            score: 0,
+            distance: 0,
+            kills: 0,
+            soldiers: CONFIG.INITIAL_SOLDIERS,
+            weapon: CONFIG.WEAPONS.RIFLE,
+            scrollSpeed: CONFIG.BASE_SCROLL_SPEED,
+            difficulty: 1,
+            lastShot: 0,
+            screenShake: 0,
+
+            // Input
+            isDragging: false,
+            targetX: 0,
+            playerX: 0,
+            playerY: 0,
+        };
+
+        let bullets = [];
+        let enemies = [];
+        let gates = [];
+        let particles = [];
+        let damageNumbers = [];
+
+        let lastTime = 0;
+        let nextGateSpawn = 0;
+        let nextEnemySpawn = 0;
+        let difficultyTimer = 0;
+
+        // ============================================
+        // UTILITY FUNCTIONS
+        // ============================================
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            gameState.playerY = canvas.height - 100;
+            if (!gameState.running) {
+                gameState.playerX = canvas.width / 2;
+                gameState.targetX = canvas.width / 2;
+            }
+        }
+
+        function lerp(a, b, t) {
+            return a + (b - a) * t;
+        }
+
+        function clamp(val, min, max) {
+            return Math.max(min, Math.min(max, val));
+        }
+
+        function randomRange(min, max) {
+            return Math.random() * (max - min) + min;
+        }
+
+        function degToRad(deg) {
+            return deg * Math.PI / 180;
+        }
+
+        function distance(x1, y1, x2, y2) {
+            return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+        }
+
+        // ============================================
+        // PARTICLE SYSTEM
+        // ============================================
+        function createExplosion(x, y, color, count = 15) {
+            for (let i = 0; i < count; i++) {
+                particles.push({
+                    x, y,
+                    vx: randomRange(-5, 5),
+                    vy: randomRange(-5, 5),
+                    life: 1,
+                    decay: randomRange(0.02, 0.05),
+                    size: randomRange(3, 8),
+                    color
+                });
+            }
+        }
+
+        function createDamageNumber(x, y, damage) {
+            damageNumbers.push({
+                x, y,
+                text: `-${damage}`,
+                life: 1,
+                vy: -2
+            });
+        }
+
+        function updateParticles() {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= p.decay;
+                if (p.life <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+
+            for (let i = damageNumbers.length - 1; i >= 0; i--) {
+                const d = damageNumbers[i];
+                d.y += d.vy;
+                d.life -= 0.02;
+                if (d.life <= 0) {
+                    damageNumbers.splice(i, 1);
+                }
+            }
+        }
+
+        function drawParticles() {
+            particles.forEach(p => {
+                ctx.globalAlpha = p.life;
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            ctx.globalAlpha = 1;
+
+            damageNumbers.forEach(d => {
+                ctx.globalAlpha = d.life;
+                ctx.fillStyle = '#ff4444';
+                ctx.font = 'bold 20px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(d.text, d.x, d.y);
+            });
+            ctx.globalAlpha = 1;
+        }
+
+        // ============================================
+        // PLAYER SQUAD
+        // ============================================
+        function getSoldierPositions() {
+            const positions = [];
+            const soldiers = Math.min(gameState.soldiers, CONFIG.MAX_SOLDIERS);
+
+            // Arrange soldiers in a formation
+            const rows = Math.ceil(Math.sqrt(soldiers));
+            const perRow = Math.ceil(soldiers / rows);
+
+            let idx = 0;
+            for (let row = 0; row < rows && idx < soldiers; row++) {
+                const inThisRow = Math.min(perRow, soldiers - idx);
+                const rowWidth = (inThisRow - 1) * CONFIG.SQUAD_SPREAD;
+
+                for (let col = 0; col < inThisRow && idx < soldiers; col++) {
+                    positions.push({
+                        x: gameState.playerX - rowWidth / 2 + col * CONFIG.SQUAD_SPREAD,
+                        y: gameState.playerY + row * CONFIG.SQUAD_SPREAD
+                    });
+                    idx++;
+                }
+            }
+
+            return positions;
+        }
+
+        function drawPlayer() {
+            const positions = getSoldierPositions();
+
+            positions.forEach((pos, i) => {
+                // Shadow
+                ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                ctx.beginPath();
+                ctx.ellipse(pos.x, pos.y + 5, CONFIG.SOLDIER_SIZE * 0.6, CONFIG.SOLDIER_SIZE * 0.3, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Body (olive green)
+                ctx.fillStyle = '#5a6e4a';
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, CONFIG.SOLDIER_SIZE, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Helmet highlight
+                ctx.fillStyle = '#6b7f5a';
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y - 3, CONFIG.SOLDIER_SIZE * 0.7, 0, Math.PI, true);
+                ctx.fill();
+
+                // Gun indicator (pointing up)
+                ctx.strokeStyle = gameState.weapon.color;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(pos.x, pos.y - CONFIG.SOLDIER_SIZE);
+                ctx.lineTo(pos.x, pos.y - CONFIG.SOLDIER_SIZE - 8);
+                ctx.stroke();
+            });
+        }
+
+        function updatePlayer() {
+            // Smooth movement toward target
+            gameState.playerX = lerp(gameState.playerX, gameState.targetX, 0.15);
+
+            // Clamp to screen bounds
+            const margin = 50;
+            gameState.playerX = clamp(gameState.playerX, margin, canvas.width - margin);
+        }
+
+        // ============================================
+        // BULLETS
+        // ============================================
+        function shoot() {
+            const now = Date.now();
+            if (now - gameState.lastShot < gameState.weapon.fireRate) return;
+
+            gameState.lastShot = now;
+
+            const positions = getSoldierPositions();
+            const bulletsPerSoldier = 1;
+
+            positions.forEach(pos => {
+                for (let i = 0; i < bulletsPerSoldier; i++) {
+                    const spreadAngle = randomRange(-gameState.weapon.spread, gameState.weapon.spread);
+                    const rad = degToRad(-90 + spreadAngle);
+
+                    bullets.push({
+                        x: pos.x,
+                        y: pos.y - CONFIG.SOLDIER_SIZE,
+                        vx: Math.cos(rad) * gameState.weapon.bulletSpeed,
+                        vy: Math.sin(rad) * gameState.weapon.bulletSpeed,
+                        damage: gameState.weapon.damage,
+                        range: gameState.weapon.range,
+                        traveled: 0,
+                        color: gameState.weapon.color
+                    });
+                }
+            });
+        }
+
+        function updateBullets() {
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const b = bullets[i];
+                b.x += b.vx;
+                b.y += b.vy;
+                b.traveled += Math.sqrt(b.vx ** 2 + b.vy ** 2);
+
+                // Remove if out of range or off screen
+                if (b.traveled > b.range || b.y < -20 || b.x < -20 || b.x > canvas.width + 20) {
+                    bullets.splice(i, 1);
+                }
+            }
+        }
+
+        function drawBullets() {
+            bullets.forEach(b => {
+                ctx.fillStyle = b.color;
+                ctx.beginPath();
+                ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Trail
+                ctx.strokeStyle = b.color;
+                ctx.globalAlpha = 0.5;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(b.x, b.y);
+                ctx.lineTo(b.x - b.vx * 2, b.y - b.vy * 2);
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+            });
+        }
+
+        // ============================================
+        // ENEMIES
+        // ============================================
+        function spawnBarrel(x, y) {
+            const hp = Math.floor(CONFIG.BARREL_HP_BASE + (gameState.difficulty - 1) * 3);
+            enemies.push({
+                type: 'barrel',
+                x, y,
+                hp,
+                maxHp: hp,
+                size: 30,
+                flashTimer: 0
+            });
+        }
+
+        function spawnEnemySoldier(x, y) {
+            const hp = Math.floor(CONFIG.SOLDIER_HP_BASE + (gameState.difficulty - 1) * 2);
+            enemies.push({
+                type: 'soldier',
+                x, y,
+                hp,
+                maxHp: hp,
+                size: 15,
+                speed: CONFIG.ENEMY_SOLDIER_SPEED + gameState.difficulty * 0.1,
+                flashTimer: 0
+            });
+        }
+
+        function spawnEnemyCluster() {
+            const clusterSize = Math.floor(randomRange(2, 4 + gameState.difficulty));
+            const centerX = randomRange(100, canvas.width - 100);
+
+            for (let i = 0; i < clusterSize; i++) {
+                const x = centerX + randomRange(-60, 60);
+                const y = randomRange(-100, -50);
+
+                if (Math.random() < 0.4) {
+                    spawnBarrel(x, y);
+                } else {
+                    spawnEnemySoldier(x, y);
+                }
+            }
+        }
+
+        function updateEnemies() {
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const e = enemies[i];
+
+                // Move with scroll
+                e.y += gameState.scrollSpeed;
+
+                // Enemy soldiers also move down
+                if (e.type === 'soldier') {
+                    e.y += e.speed;
+                }
+
+                // Flash timer
+                if (e.flashTimer > 0) {
+                    e.flashTimer -= 16;
+                }
+
+                // Remove if off screen
+                if (e.y > canvas.height + 50) {
+                    enemies.splice(i, 1);
+                    continue;
+                }
+
+                // Check collision with player
+                const playerPositions = getSoldierPositions();
+                for (const pos of playerPositions) {
+                    if (distance(pos.x, pos.y, e.x, e.y) < e.size + CONFIG.SOLDIER_SIZE) {
+                        // Player loses soldiers equal to remaining HP
+                        const damage = Math.min(e.hp, gameState.soldiers);
+                        gameState.soldiers -= damage;
+                        createDamageNumber(gameState.playerX, gameState.playerY - 30, damage);
+                        createExplosion(e.x, e.y, '#ff6b35', 20);
+                        gameState.screenShake = 10;
+                        enemies.splice(i, 1);
+
+                        if (gameState.soldiers <= 0) {
+                            endGame();
+                        }
+                        break;
+                    }
+                }
+
+                // Check bullet collisions
+                for (let j = bullets.length - 1; j >= 0; j--) {
+                    const b = bullets[j];
+                    if (distance(b.x, b.y, e.x, e.y) < e.size) {
+                        e.hp -= b.damage;
+                        e.flashTimer = 100;
+                        bullets.splice(j, 1);
+                        createExplosion(b.x, b.y, b.color, 5);
+
+                        if (e.hp <= 0) {
+                            // Enemy destroyed
+                            gameState.kills++;
+                            gameState.score += e.maxHp * 10;
+                            createExplosion(e.x, e.y, e.type === 'barrel' ? '#ff6b35' : '#e94560', 20);
+                            gameState.screenShake = 5;
+                            enemies.splice(i, 1);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        function drawEnemies() {
+            enemies.forEach(e => {
+                const flash = e.flashTimer > 0;
+
+                if (e.type === 'barrel') {
+                    // Barrel body
+                    ctx.fillStyle = flash ? '#fff' : '#8b4513';
+                    ctx.beginPath();
+                    ctx.roundRect(e.x - e.size/2, e.y - e.size/2, e.size, e.size, 5);
+                    ctx.fill();
+
+                    // Barrel stripes
+                    ctx.fillStyle = flash ? '#ffd' : '#654321';
+                    ctx.fillRect(e.x - e.size/2, e.y - 5, e.size, 4);
+                    ctx.fillRect(e.x - e.size/2, e.y + 8, e.size, 4);
+
+                    // HP text
+                    ctx.fillStyle = '#fff';
+                    ctx.font = 'bold 14px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(e.hp.toString(), e.x, e.y);
+
+                } else if (e.type === 'soldier') {
+                    // Enemy soldier body (red)
+                    ctx.fillStyle = flash ? '#fff' : '#8b0000';
+                    ctx.beginPath();
+                    ctx.arc(e.x, e.y, e.size, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Helmet
+                    ctx.fillStyle = flash ? '#ffd' : '#660000';
+                    ctx.beginPath();
+                    ctx.arc(e.x, e.y - 3, e.size * 0.7, 0, Math.PI, true);
+                    ctx.fill();
+
+                    // HP text
+                    ctx.fillStyle = '#fff';
+                    ctx.font = 'bold 12px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(e.hp.toString(), e.x, e.y);
+                }
+            });
+        }
+
+        // ============================================
+        // GATES
+        // ============================================
+        function createGatePair() {
+            const gateTypes = ['soldiers_add', 'soldiers_multiply', 'soldiers_subtract', 'weapon'];
+
+            // Pick two different types
+            let type1 = gateTypes[Math.floor(Math.random() * gateTypes.length)];
+            let type2;
+            do {
+                type2 = gateTypes[Math.floor(Math.random() * gateTypes.length)];
+            } while (type1 === type2 && Math.random() > 0.3); // Sometimes allow same type
+
+            const leftGate = createGate(type1);
+            const rightGate = createGate(type2);
+
+            const totalWidth = CONFIG.GATE_WIDTH * 2 + CONFIG.GATE_GAP;
+            const startX = (canvas.width - totalWidth) / 2;
+
+            leftGate.x = startX + CONFIG.GATE_WIDTH / 2;
+            leftGate.y = -CONFIG.GATE_HEIGHT;
+
+            rightGate.x = startX + CONFIG.GATE_WIDTH * 1.5 + CONFIG.GATE_GAP;
+            rightGate.y = -CONFIG.GATE_HEIGHT;
+
+            gates.push(leftGate, rightGate);
+        }
+
+        function createGate(type) {
+            const gate = {
+                type,
+                x: 0,
+                y: 0,
+                width: CONFIG.GATE_WIDTH,
+                height: CONFIG.GATE_HEIGHT,
+                passed: false
+            };
+
+            switch (type) {
+                case 'soldiers_add':
+                    gate.value = Math.floor(randomRange(2, 5 + gameState.difficulty));
+                    gate.text = `+${gate.value}`;
+                    gate.color = '#2ecc71';
+                    break;
+                case 'soldiers_multiply':
+                    gate.value = Math.random() < 0.5 ? 2 : (Math.random() < 0.5 ? 1.5 : 3);
+                    gate.text = `×${gate.value}`;
+                    gate.color = '#3498db';
+                    break;
+                case 'soldiers_subtract':
+                    gate.value = Math.floor(randomRange(2, 4 + gameState.difficulty * 2));
+                    gate.text = `-${gate.value}`;
+                    gate.color = '#e74c3c';
+                    break;
+                case 'weapon':
+                    const weapons = Object.keys(CONFIG.WEAPONS);
+                    const currentWeaponIndex = weapons.indexOf(gameState.weapon.name);
+                    let newWeaponKey;
+                    do {
+                        newWeaponKey = weapons[Math.floor(Math.random() * weapons.length)];
+                    } while (newWeaponKey === gameState.weapon.name);
+                    gate.weapon = CONFIG.WEAPONS[newWeaponKey];
+                    gate.text = gate.weapon.name;
+                    gate.color = gate.weapon.color;
+                    break;
+            }
+
+            return gate;
+        }
+
+        function updateGates() {
+            for (let i = gates.length - 1; i >= 0; i--) {
+                const g = gates[i];
+                g.y += gameState.scrollSpeed;
+
+                // Remove if off screen
+                if (g.y > canvas.height + 50) {
+                    gates.splice(i, 1);
+                    continue;
+                }
+
+                // Check if player passes through
+                if (!g.passed &&
+                    gameState.playerY < g.y + g.height / 2 &&
+                    gameState.playerY > g.y - g.height / 2) {
+
+                    if (gameState.playerX > g.x - g.width / 2 &&
+                        gameState.playerX < g.x + g.width / 2) {
+
+                        g.passed = true;
+                        applyGateEffect(g);
+                    }
+                }
+            }
+        }
+
+        function applyGateEffect(gate) {
+            switch (gate.type) {
+                case 'soldiers_add':
+                    gameState.soldiers = Math.min(gameState.soldiers + gate.value, CONFIG.MAX_SOLDIERS);
+                    createExplosion(gate.x, gate.y, gate.color, 15);
+                    break;
+                case 'soldiers_multiply':
+                    gameState.soldiers = Math.min(Math.floor(gameState.soldiers * gate.value), CONFIG.MAX_SOLDIERS);
+                    createExplosion(gate.x, gate.y, gate.color, 20);
+                    break;
+                case 'soldiers_subtract':
+                    gameState.soldiers = Math.max(gameState.soldiers - gate.value, 0);
+                    createExplosion(gate.x, gate.y, gate.color, 10);
+                    gameState.screenShake = 8;
+                    if (gameState.soldiers <= 0) {
+                        endGame();
+                    }
+                    break;
+                case 'weapon':
+                    gameState.weapon = gate.weapon;
+                    createExplosion(gate.x, gate.y, gate.color, 15);
+                    break;
+            }
+
+            updateUI();
+        }
+
+        function drawGates() {
+            gates.forEach(g => {
+                // Gate background
+                ctx.fillStyle = g.passed ? 'rgba(100,100,100,0.3)' : g.color;
+                ctx.globalAlpha = g.passed ? 0.3 : 0.8;
+                ctx.beginPath();
+                ctx.roundRect(g.x - g.width/2, g.y - g.height/2, g.width, g.height, 10);
+                ctx.fill();
+
+                // Border
+                ctx.strokeStyle = g.color;
+                ctx.lineWidth = 3;
+                ctx.globalAlpha = g.passed ? 0.3 : 1;
+                ctx.stroke();
+
+                // Text
+                ctx.globalAlpha = g.passed ? 0.3 : 1;
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 24px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(g.text, g.x, g.y);
+
+                ctx.globalAlpha = 1;
+            });
+        }
+
+        // ============================================
+        // SPAWNING SYSTEM
+        // ============================================
+        function updateSpawning(deltaTime) {
+            nextGateSpawn -= deltaTime;
+            nextEnemySpawn -= deltaTime;
+
+            if (nextGateSpawn <= 0) {
+                createGatePair();
+                nextGateSpawn = randomRange(3000, 5000) / (1 + gameState.difficulty * 0.1);
+            }
+
+            if (nextEnemySpawn <= 0) {
+                spawnEnemyCluster();
+                nextEnemySpawn = randomRange(1500, 3000) / (1 + gameState.difficulty * 0.2);
+            }
+        }
+
+        // ============================================
+        // DIFFICULTY SCALING
+        // ============================================
+        function updateDifficulty(deltaTime) {
+            difficultyTimer += deltaTime;
+
+            if (difficultyTimer >= CONFIG.DIFFICULTY_INCREASE_INTERVAL) {
+                difficultyTimer = 0;
+                gameState.difficulty += 0.5;
+                gameState.scrollSpeed = Math.min(
+                    CONFIG.BASE_SCROLL_SPEED + gameState.difficulty * 0.3,
+                    CONFIG.MAX_SCROLL_SPEED
+                );
+            }
+        }
+
+        // ============================================
+        // UI
+        // ============================================
+        function updateUI() {
+            document.getElementById('scoreValue').textContent = Math.floor(gameState.score);
+            document.getElementById('soldierValue').textContent = gameState.soldiers;
+            document.getElementById('weaponValue').textContent = gameState.weapon.name;
+        }
+
+        // ============================================
+        // BACKGROUND
+        // ============================================
+        let bgOffset = 0;
+
+        function drawBackground() {
+            // Main background
+            ctx.fillStyle = '#2d3a3a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Grid lines for sense of movement
+            ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+            ctx.lineWidth = 1;
+
+            const gridSize = 80;
+            bgOffset = (bgOffset + gameState.scrollSpeed) % gridSize;
+
+            for (let y = bgOffset - gridSize; y < canvas.height; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+
+            for (let x = 0; x < canvas.width; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+        }
+
+        // ============================================
+        // GAME LOOP
+        // ============================================
+        function gameLoop(timestamp) {
+            if (!gameState.running) return;
+
+            const deltaTime = timestamp - lastTime;
+            lastTime = timestamp;
+
+            // Update
+            updatePlayer();
+            shoot();
+            updateBullets();
+            updateEnemies();
+            updateGates();
+            updateParticles();
+            updateSpawning(deltaTime);
+            updateDifficulty(deltaTime);
+
+            // Score increases with distance
+            gameState.distance += gameState.scrollSpeed;
+            gameState.score = Math.floor(gameState.distance / 10) + gameState.kills * 10;
+            updateUI();
+
+            // Screen shake
+            let shakeX = 0, shakeY = 0;
+            if (gameState.screenShake > 0) {
+                shakeX = randomRange(-gameState.screenShake, gameState.screenShake);
+                shakeY = randomRange(-gameState.screenShake, gameState.screenShake);
+                gameState.screenShake *= 0.9;
+                if (gameState.screenShake < 0.5) gameState.screenShake = 0;
+            }
+
+            // Draw
+            ctx.save();
+            ctx.translate(shakeX, shakeY);
+
+            drawBackground();
+            drawGates();
+            drawEnemies();
+            drawBullets();
+            drawPlayer();
+            drawParticles();
+
+            ctx.restore();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // ============================================
+        // GAME STATE MANAGEMENT
+        // ============================================
+        function startGame() {
+            gameState = {
+                running: true,
+                gameOver: false,
+                score: 0,
+                distance: 0,
+                kills: 0,
+                soldiers: CONFIG.INITIAL_SOLDIERS,
+                weapon: CONFIG.WEAPONS.RIFLE,
+                scrollSpeed: CONFIG.BASE_SCROLL_SPEED,
+                difficulty: 1,
+                lastShot: 0,
+                screenShake: 0,
+                isDragging: false,
+                targetX: canvas.width / 2,
+                playerX: canvas.width / 2,
+                playerY: canvas.height - 100,
+            };
+
+            bullets = [];
+            enemies = [];
+            gates = [];
+            particles = [];
+            damageNumbers = [];
+
+            nextGateSpawn = 2000;
+            nextEnemySpawn = 1000;
+            difficultyTimer = 0;
+            bgOffset = 0;
+
+            document.getElementById('startScreen').style.display = 'none';
+            document.getElementById('gameOver').style.display = 'none';
+            document.getElementById('ui').style.display = 'flex';
+
+            updateUI();
+            lastTime = performance.now();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function endGame() {
+            gameState.running = false;
+            gameState.gameOver = true;
+            gameState.soldiers = 0;
+
+            document.getElementById('finalScore').textContent = Math.floor(gameState.score);
+            document.getElementById('gameOver').style.display = 'block';
+        }
+
+        // ============================================
+        // INPUT HANDLING
+        // ============================================
+        function getInputX(e) {
+            if (e.touches) {
+                return e.touches[0].clientX;
+            }
+            return e.clientX;
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (!gameState.running) return;
+            gameState.isDragging = true;
+            gameState.targetX = getInputX(e);
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!gameState.running || !gameState.isDragging) return;
+            gameState.targetX = getInputX(e);
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            gameState.isDragging = false;
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            gameState.isDragging = false;
+        });
+
+        // Touch events
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (!gameState.running) return;
+            gameState.isDragging = true;
+            gameState.targetX = getInputX(e);
+        });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (!gameState.running) return;
+            gameState.targetX = getInputX(e);
+        });
+
+        canvas.addEventListener('touchend', () => {
+            gameState.isDragging = false;
+        });
+
+        // Buttons
+        document.getElementById('startBtn').addEventListener('click', startGame);
+        document.getElementById('restartBtn').addEventListener('click', startGame);
+
+        // Initialize
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Initial draw
+        drawBackground();
+    </script>
+</body>
+</html>
