@@ -174,7 +174,7 @@
 
     <div id="startScreen">
         <h1>Squad Shooter</h1>
-        <p>Drag left/right to switch lanes<br>Destroy enemies • Choose gates wisely<br>Survive as long as you can!</p>
+        <p>Drag to move your squad<br>Destroy enemies • Choose gates wisely<br>Survive as long as you can!</p>
         <button id="startBtn">PLAY</button>
     </div>
 
@@ -228,9 +228,9 @@
                 }
             },
 
-            // Scrolling (depth movement)
-            BASE_SCROLL_SPEED: 0.008,
-            MAX_SCROLL_SPEED: 0.02,
+            // Scrolling (screen Y pixels per frame)
+            BASE_SCROLL_SPEED: 2,
+            MAX_SCROLL_SPEED: 5,
 
             // Enemies
             BARREL_HP_BASE: 8,
@@ -262,14 +262,12 @@
             lastShot: 0,
             screenShake: 0,
 
-            // Lane system (0 = left, 1 = right)
-            currentLane: 0, // 0 = left, 1 = right
-            targetLane: 0,
-            lanePosition: 0, // -1 to 1, where 0 is center
+            // Player position (-1 = left edge, 0 = center, 1 = right edge)
+            playerX: 0, // normalized position on road
+            targetX: 0,
 
             // Input
             isDragging: false,
-            dragStartX: 0,
             lastInputX: 0,
         };
 
@@ -531,9 +529,8 @@
             const squadDepth = 0.05;
             const baseY = getYFromDepth(squadDepth);
 
-            // Get current X position based on lane
-            const laneX = gameState.lanePosition;
-            const baseX = getXAtDepth(laneX, squadDepth);
+            // Get current X position (continuous)
+            const baseX = getXAtDepth(gameState.playerX, squadDepth);
 
             // Formation - spread soldiers in a crowd
             const rows = Math.ceil(Math.sqrt(soldiers * 1.5));
@@ -611,9 +608,10 @@
         }
 
         function updatePlayer() {
-            // Smooth lane transition
-            const targetX = gameState.targetLane === 0 ? -0.5 : 0.5;
-            gameState.lanePosition = lerp(gameState.lanePosition, targetX, 0.12);
+            // Smooth movement toward target
+            gameState.playerX = lerp(gameState.playerX, gameState.targetX, 0.15);
+            // Clamp to road bounds
+            gameState.playerX = clamp(gameState.playerX, -0.85, 0.85);
         }
 
         // ============================================
@@ -633,53 +631,55 @@
                 const spreadAngle = randomRange(-gameState.weapon.spread, gameState.weapon.spread);
 
                 bullets.push({
-                    x: pos.x,
-                    y: pos.y,
-                    depth: pos.depth,
-                    angle: spreadAngle,
-                    speed: gameState.weapon.bulletSpeed,
+                    screenX: pos.x,
+                    screenY: pos.y,
+                    vx: Math.sin(degToRad(spreadAngle)) * gameState.weapon.bulletSpeed * 0.3,
+                    vy: -gameState.weapon.bulletSpeed,
                     damage: gameState.weapon.damage,
                     color: gameState.weapon.color,
-                    life: 1
                 });
             }
         }
 
         function updateBullets() {
+            const horizonY = canvas.height * CONFIG.HORIZON_Y;
+
             for (let i = bullets.length - 1; i >= 0; i--) {
                 const b = bullets[i];
 
-                // Move bullet forward (increasing depth) and slight X drift based on angle
-                b.depth += gameState.scrollSpeed * 3 + 0.02;
-                const drift = Math.sin(degToRad(b.angle)) * 3 * getDepthScale(b.depth);
-                b.x += drift;
+                // Move bullet (screen space)
+                b.screenX += b.vx;
+                b.screenY += b.vy;
 
-                // Update screen position
-                b.y = getYFromDepth(b.depth);
-
-                // Remove if past horizon or off screen
-                if (b.depth > 0.95 || b.y < 0) {
+                // Remove if off screen
+                if (b.screenY < horizonY - 20 || b.screenX < 0 || b.screenX > canvas.width) {
                     bullets.splice(i, 1);
                 }
             }
         }
 
         function drawBullets() {
+            const horizonY = canvas.height * CONFIG.HORIZON_Y;
+            const playerY = canvas.height - 80;
+            const roadHeight = playerY - horizonY;
+
             bullets.forEach(b => {
-                const scale = getDepthScale(b.depth);
-                const size = 6 * scale;
+                // Calculate scale based on screen Y
+                const depth = 1 - (b.screenY - horizonY) / roadHeight;
+                const scale = getDepthScale(clamp(depth, 0, 1));
+                const size = 5 * Math.max(scale, 0.4);
 
                 // Bullet trail
                 ctx.fillStyle = b.color;
                 ctx.globalAlpha = 0.9;
                 ctx.beginPath();
-                ctx.ellipse(b.x, b.y, size * 0.5, size * 2, 0, 0, Math.PI * 2);
+                ctx.ellipse(b.screenX, b.screenY, size * 0.5, size * 1.5, 0, 0, Math.PI * 2);
                 ctx.fill();
 
                 // Glow
                 ctx.globalAlpha = 0.4;
                 ctx.beginPath();
-                ctx.arc(b.x, b.y, size * 2, 0, Math.PI * 2);
+                ctx.arc(b.screenX, b.screenY, size * 2, 0, Math.PI * 2);
                 ctx.fill();
 
                 ctx.globalAlpha = 1;
@@ -689,80 +689,87 @@
         // ============================================
         // ENEMIES
         // ============================================
-        function spawnBarrel(lane) {
+        function spawnBarrel(laneX) {
             const hp = Math.floor(CONFIG.BARREL_HP_BASE + (gameState.difficulty - 1) * 5);
+            const horizonY = canvas.height * CONFIG.HORIZON_Y;
             enemies.push({
                 type: 'barrel',
-                lane,
-                depth: 0.95,
+                laneX, // normalized X position (-0.5 for left lane, 0.5 for right)
+                screenY: horizonY + 20,
                 hp,
                 maxHp: hp,
                 flashTimer: 0
             });
         }
 
-        function spawnEnemySoldier(lane, offset = 0) {
+        function spawnEnemySoldier(laneX) {
             const hp = Math.floor(CONFIG.SOLDIER_HP_BASE + (gameState.difficulty - 1) * 3);
+            const horizonY = canvas.height * CONFIG.HORIZON_Y;
             enemies.push({
                 type: 'soldier',
-                lane,
-                laneOffset: offset,
-                depth: 0.95,
+                laneX,
+                screenY: horizonY + 20 + randomRange(-30, 30),
                 hp,
                 maxHp: hp,
-                flashTimer: 0
+                flashTimer: 0,
+                walkSpeed: 0.5 + gameState.difficulty * 0.1
             });
         }
 
         function spawnEnemyCluster() {
-            const lane = Math.random() < 0.5 ? 0 : 1;
+            const baseLaneX = Math.random() < 0.5 ? -0.5 : 0.5;
             const enemyType = Math.random();
 
             if (enemyType < 0.35) {
                 // Barrel
-                spawnBarrel(lane);
+                spawnBarrel(baseLaneX + randomRange(-0.1, 0.1));
             } else {
                 // Cluster of soldiers
                 const count = Math.floor(randomRange(2, 4 + gameState.difficulty));
                 for (let i = 0; i < count; i++) {
-                    const offset = randomRange(-0.15, 0.15);
-                    spawnEnemySoldier(lane, offset);
-                    enemies[enemies.length - 1].depth += randomRange(0, 0.05);
+                    spawnEnemySoldier(baseLaneX + randomRange(-0.2, 0.2));
                 }
             }
         }
 
         function updateEnemies() {
+            const horizonY = canvas.height * CONFIG.HORIZON_Y;
+            const playerY = canvas.height - 80;
+            const roadHeight = playerY - horizonY;
+
             for (let i = enemies.length - 1; i >= 0; i--) {
                 const e = enemies[i];
 
-                // Move toward player (decreasing depth)
-                e.depth -= gameState.scrollSpeed;
+                // Move toward player (constant screen speed)
+                e.screenY += gameState.scrollSpeed;
 
                 if (e.type === 'soldier') {
-                    e.depth -= 0.002; // Enemy soldiers advance faster
+                    e.screenY += e.walkSpeed; // Enemy soldiers advance faster
                 }
 
                 // Flash timer
                 if (e.flashTimer > 0) e.flashTimer -= 16;
 
-                // Calculate screen position
-                const laneX = e.lane === 0 ? -0.5 : 0.5;
-                const offset = e.laneOffset || 0;
-                e.screenX = getXAtDepth(laneX + offset, e.depth);
-                e.screenY = getYFromDepth(e.depth);
+                // Calculate depth from screen Y for scaling
+                e.depth = 1 - (e.screenY - horizonY) / roadHeight;
+                e.depth = clamp(e.depth, 0, 1);
                 e.scale = getDepthScale(e.depth);
 
+                // Calculate screen X from lane position
+                e.screenX = getXAtDepth(e.laneX, e.depth);
+
                 // Remove if past player
-                if (e.depth < 0.02) {
+                if (e.screenY > canvas.height + 50) {
                     enemies.splice(i, 1);
                     continue;
                 }
 
-                // Check collision with player (same lane, close depth)
-                if (e.depth < 0.15 && e.depth > 0.02) {
-                    const playerLane = gameState.targetLane;
-                    if (e.lane === playerLane) {
+                // Check collision with player (check X proximity when near bottom)
+                if (e.screenY > playerY - 40 && e.screenY < playerY + 20) {
+                    const playerScreenX = getXAtDepth(gameState.playerX, 0.05);
+                    const collisionDist = (e.type === 'barrel' ? 50 : 35);
+
+                    if (Math.abs(e.screenX - playerScreenX) < collisionDist) {
                         // Collision!
                         const damage = Math.ceil(e.hp / 2);
                         gameState.soldiers -= damage;
@@ -781,13 +788,12 @@
                 // Check bullet collisions
                 for (let j = bullets.length - 1; j >= 0; j--) {
                     const b = bullets[j];
-                    const hitRadius = (e.type === 'barrel' ? 40 : 25) * e.scale;
+                    const hitRadius = (e.type === 'barrel' ? 35 : 22) * e.scale;
 
-                    // Check if bullet is close to enemy
-                    const dx = Math.abs(b.x - e.screenX);
-                    const dy = Math.abs(b.y - e.screenY);
+                    const dx = Math.abs(b.screenX - e.screenX);
+                    const dy = Math.abs(b.screenY - e.screenY);
 
-                    if (dx < hitRadius && dy < hitRadius && Math.abs(b.depth - e.depth) < 0.1) {
+                    if (dx < hitRadius && dy < hitRadius) {
                         e.hp -= b.damage;
                         e.flashTimer = 80;
                         bullets.splice(j, 1);
@@ -907,13 +913,14 @@
         }
 
         function createGate(lane, type) {
+            const horizonY = canvas.height * CONFIG.HORIZON_Y;
             const gate = {
                 type,
-                lane,
-                depth: 0.92,
+                lane, // 0 = left, 1 = right
+                screenY: horizonY + 30,
                 passed: false,
                 width: 0.45,
-                height: 0.06
+                height: 50
             };
 
             switch (type) {
@@ -949,19 +956,23 @@
         }
 
         function updateGates() {
+            const playerY = canvas.height - 80;
+
             for (let i = gates.length - 1; i >= 0; i--) {
                 const g = gates[i];
-                g.depth -= gameState.scrollSpeed;
+                g.screenY += gameState.scrollSpeed;
 
                 // Remove if past player
-                if (g.depth < 0) {
+                if (g.screenY > canvas.height + 100) {
                     gates.splice(i, 1);
                     continue;
                 }
 
                 // Check if player passes through
-                if (!g.passed && g.depth < 0.12 && g.depth > 0.02) {
-                    if (g.lane === gameState.targetLane) {
+                if (!g.passed && g.screenY > playerY - 30 && g.screenY < playerY + 30) {
+                    // Check if player X is within this gate's lane
+                    const playerLane = gameState.playerX < 0 ? 0 : 1;
+                    if (g.lane === playerLane) {
                         g.passed = true;
                         applyGateEffect(g);
                     }
@@ -970,8 +981,14 @@
         }
 
         function applyGateEffect(gate) {
-            const gateX = getLaneX(gate.lane, gate.depth);
-            const gateY = getYFromDepth(gate.depth);
+            const horizonY = canvas.height * CONFIG.HORIZON_Y;
+            const playerY = canvas.height - 80;
+            const roadHeight = playerY - horizonY;
+            const depth = 1 - (gate.screenY - horizonY) / roadHeight;
+
+            const laneX = gate.lane === 0 ? -0.5 : 0.5;
+            const gateX = getXAtDepth(laneX, clamp(depth, 0, 1));
+            const gateY = gate.screenY;
 
             switch (gate.type) {
                 case 'soldiers_add':
@@ -1004,23 +1021,29 @@
         }
 
         function drawGates() {
-            // Sort by depth
-            const sorted = [...gates].sort((a, b) => b.depth - a.depth);
+            const horizonY = canvas.height * CONFIG.HORIZON_Y;
+            const playerY = canvas.height - 80;
+            const roadHeight = playerY - horizonY;
+
+            // Sort by screenY (furthest first = smallest Y)
+            const sorted = [...gates].sort((a, b) => a.screenY - b.screenY);
 
             sorted.forEach(g => {
-                const scale = getDepthScale(g.depth);
+                // Calculate depth from screenY
+                const depth = 1 - (g.screenY - horizonY) / roadHeight;
+                const clampedDepth = clamp(depth, 0.05, 1);
+                const scale = getDepthScale(clampedDepth);
                 const laneX = g.lane === 0 ? -0.5 : 0.5;
 
                 // Gate dimensions in screen space
-                const leftX = getXAtDepth(laneX - g.width/2, g.depth);
-                const rightX = getXAtDepth(laneX + g.width/2, g.depth);
-                const topY = getYFromDepth(g.depth + g.height/2);
-                const bottomY = getYFromDepth(g.depth - g.height/2);
+                const leftX = getXAtDepth(laneX - g.width/2, clampedDepth);
+                const rightX = getXAtDepth(laneX + g.width/2, clampedDepth);
+                const gateHeight = g.height * scale;
 
                 const width = rightX - leftX;
-                const height = bottomY - topY;
                 const centerX = (leftX + rightX) / 2;
-                const centerY = (topY + bottomY) / 2;
+                const topY = g.screenY - gateHeight / 2;
+                const centerY = g.screenY;
 
                 if (g.passed) {
                     ctx.globalAlpha = 0.3;
@@ -1029,7 +1052,7 @@
                 // Gate background
                 ctx.fillStyle = g.bgColor;
                 ctx.beginPath();
-                ctx.roundRect(leftX, topY, width, height, 10 * scale);
+                ctx.roundRect(leftX, topY, width, gateHeight, 8 * scale);
                 ctx.fill();
 
                 // Gate border
@@ -1039,16 +1062,16 @@
 
                 // Gate posts (vertical bars on sides)
                 ctx.fillStyle = g.color;
-                ctx.fillRect(leftX - 5 * scale, topY - 20 * scale, 10 * scale, height + 40 * scale);
-                ctx.fillRect(rightX - 5 * scale, topY - 20 * scale, 10 * scale, height + 40 * scale);
+                ctx.fillRect(leftX - 4 * scale, topY - 15 * scale, 8 * scale, gateHeight + 30 * scale);
+                ctx.fillRect(rightX - 4 * scale, topY - 15 * scale, 8 * scale, gateHeight + 30 * scale);
 
                 // Text
                 ctx.fillStyle = '#fff';
-                ctx.font = `bold ${Math.floor(32 * scale)}px Arial`;
+                ctx.font = `bold ${Math.floor(28 * scale)}px Arial`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-                ctx.lineWidth = 4 * scale;
+                ctx.lineWidth = 3 * scale;
                 ctx.strokeText(g.text, centerX, centerY);
                 ctx.fillText(g.text, centerX, centerY);
 
@@ -1084,7 +1107,7 @@
                 difficultyTimer = 0;
                 gameState.difficulty += 0.5;
                 gameState.scrollSpeed = Math.min(
-                    CONFIG.BASE_SCROLL_SPEED + gameState.difficulty * 0.002,
+                    CONFIG.BASE_SCROLL_SPEED + gameState.difficulty * 0.3,
                     CONFIG.MAX_SCROLL_SPEED
                 );
             }
@@ -1164,11 +1187,9 @@
                 difficulty: 1,
                 lastShot: 0,
                 screenShake: 0,
-                currentLane: 0,
-                targetLane: 0,
-                lanePosition: -0.5,
+                playerX: 0,
+                targetX: 0,
                 isDragging: false,
-                dragStartX: 0,
                 lastInputX: 0,
             };
 
@@ -1208,52 +1229,41 @@
             return e.clientX;
         }
 
+        function screenXToNormalized(screenX) {
+            // Convert screen X to normalized road position (-1 to 1)
+            const roadLeft = getRoadEdgeX(-1, 0.05);
+            const roadRight = getRoadEdgeX(1, 0.05);
+            const roadWidth = roadRight - roadLeft;
+            return ((screenX - roadLeft) / roadWidth) * 2 - 1;
+        }
+
         function handleInputStart(e) {
             if (!gameState.running) return;
             gameState.isDragging = true;
-            gameState.dragStartX = getInputX(e);
-            gameState.lastInputX = gameState.dragStartX;
+            gameState.lastInputX = getInputX(e);
+            // Move to touch/click position
+            gameState.targetX = clamp(screenXToNormalized(gameState.lastInputX), -0.85, 0.85);
         }
 
         function handleInputMove(e) {
-            if (!gameState.running || !gameState.isDragging) return;
+            if (!gameState.running) return;
 
             const currentX = getInputX(e);
-            const deltaX = currentX - gameState.lastInputX;
-            gameState.lastInputX = currentX;
 
-            // Switch lanes based on drag direction
-            if (Math.abs(currentX - gameState.dragStartX) > 30) {
-                if (currentX > gameState.dragStartX && gameState.targetLane === 0) {
-                    gameState.targetLane = 1;
-                } else if (currentX < gameState.dragStartX && gameState.targetLane === 1) {
-                    gameState.targetLane = 0;
-                }
-                gameState.dragStartX = currentX;
+            if (gameState.isDragging) {
+                // Continuous movement - follow the input
+                gameState.targetX = clamp(screenXToNormalized(currentX), -0.85, 0.85);
             }
+
+            gameState.lastInputX = currentX;
         }
 
         function handleInputEnd() {
             gameState.isDragging = false;
         }
 
-        // Also allow clicking/tapping sides of screen to switch lanes
-        function handleTap(e) {
-            if (!gameState.running) return;
-
-            const x = getInputX(e);
-            if (x < canvas.width / 2) {
-                gameState.targetLane = 0;
-            } else {
-                gameState.targetLane = 1;
-            }
-        }
-
         // Mouse events
-        canvas.addEventListener('mousedown', (e) => {
-            handleInputStart(e);
-            handleTap(e);
-        });
+        canvas.addEventListener('mousedown', handleInputStart);
         canvas.addEventListener('mousemove', handleInputMove);
         canvas.addEventListener('mouseup', handleInputEnd);
         canvas.addEventListener('mouseleave', handleInputEnd);
@@ -1262,7 +1272,6 @@
         canvas.addEventListener('touchstart', (e) => {
             e.preventDefault();
             handleInputStart(e);
-            handleTap(e);
         });
         canvas.addEventListener('touchmove', (e) => {
             e.preventDefault();
@@ -1273,8 +1282,12 @@
         // Keyboard support
         document.addEventListener('keydown', (e) => {
             if (!gameState.running) return;
-            if (e.key === 'ArrowLeft' || e.key === 'a') gameState.targetLane = 0;
-            if (e.key === 'ArrowRight' || e.key === 'd') gameState.targetLane = 1;
+            if (e.key === 'ArrowLeft' || e.key === 'a') {
+                gameState.targetX = clamp(gameState.targetX - 0.15, -0.85, 0.85);
+            }
+            if (e.key === 'ArrowRight' || e.key === 'd') {
+                gameState.targetX = clamp(gameState.targetX + 0.15, -0.85, 0.85);
+            }
         });
 
         // Buttons
